@@ -151,6 +151,72 @@ def test_hs_offload_deepspeed_config_supports_quant_bits():
     assert quant_init["group_size"] == 128
 
 
+
+
+def test_build_hs_offload_model_passes_quant_group_size_to_hs_config(monkeypatch):
+    fake_model = _make_fake_model()
+    fake_hf_ds_config = object()
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, model):
+            self.module = model
+
+        def set_hidden_state_offload(self, enabled=True, config=None):
+            captured["enabled"] = enabled
+            captured["config"] = config
+
+    fake_engine = FakeEngine(fake_model)
+
+    monkeypatch.setattr(
+        HSOffloadHFLM,
+        "_maybe_init_distributed",
+        classmethod(lambda cls, deepspeed=None, device=None: None),
+    )
+    monkeypatch.setattr(
+        HSOffloadHFLM,
+        "_load_model_config",
+        classmethod(lambda cls, pretrained, revision="main", trust_remote_code=False, subfolder="": fake_model.config),
+    )
+    monkeypatch.setattr(
+        transformers.AutoModelForCausalLM,
+        "from_pretrained",
+        lambda *args, **kwargs: fake_model,
+    )
+
+    import deepspeed
+    import transformers.deepspeed as transformers_deepspeed
+
+    monkeypatch.setattr(
+        deepspeed,
+        "initialize",
+        lambda model=None, config_params=None: [fake_engine],
+    )
+    monkeypatch.setattr(
+        transformers_deepspeed,
+        "HfDeepSpeedConfig",
+        lambda config: fake_hf_ds_config,
+    )
+
+    _, _, returned_hf_ds_config, hs_config = HSOffloadHFLM._build_hs_offload_model(
+        "unit/test-model",
+        device="cpu",
+        dtype="float16",
+        batch_size=1,
+        quant_bits=4,
+        quant_group_size=256,
+        hs_offload=True,
+        hs_codec_name="grouped_asym_int2_outlier",
+        hs_outlier_k=8,
+    )
+
+    assert returned_hf_ds_config is fake_hf_ds_config
+    assert captured["enabled"] is True
+    assert captured["config"] is hs_config
+    assert hs_config.quant_group_size == 256
+    assert hs_config.outlier_k == 8
+    assert hs_config.codec_name == "grouped_asym_int2_outlier"
+
 def test_hs_offload_kv_offload_setup_uses_generation_budget():
     calls = []
     fake_model = SimpleNamespace(
