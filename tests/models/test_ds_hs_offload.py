@@ -96,7 +96,7 @@ def test_hs_offload_init_uses_custom_build_path(monkeypatch):
         hs_offload=True,
         hs_max_gen_len=2048,
         hs_device="cpu",
-        hs_codec_name="int8",
+        hs_codec_name="qbi",
         ds_batch_size=2,
         cpu_offload=True,
         offload_dir="/tmp/hs-offload-test",
@@ -108,7 +108,7 @@ def test_hs_offload_init_uses_custom_build_path(monkeypatch):
     assert build_calls["pretrained"] == "unit/test-model"
     assert build_calls["kwargs"]["hs_max_gen_len"] == 2048
     assert build_calls["kwargs"]["hs_device"] == "cpu"
-    assert build_calls["kwargs"]["hs_codec_name"] == "int8"
+    assert build_calls["kwargs"]["hs_codec_name"] == "qbi"
     assert build_calls["kwargs"]["ds_batch_size"] == 2
     assert build_calls["kwargs"]["cpu_offload"] is True
     assert build_calls["kwargs"]["offload_dir"] == "/tmp/hs-offload-test"
@@ -153,7 +153,7 @@ def test_hs_offload_deepspeed_config_supports_quant_bits():
 
 
 
-def test_build_hs_offload_model_passes_quant_group_size_to_hs_config(monkeypatch):
+def test_build_hs_offload_model_keeps_weight_and_hidden_group_sizes_separate(monkeypatch):
     fake_model = _make_fake_model()
     fake_hf_ds_config = object()
     captured = {}
@@ -187,11 +187,11 @@ def test_build_hs_offload_model_passes_quant_group_size_to_hs_config(monkeypatch
     import deepspeed
     import transformers.deepspeed as transformers_deepspeed
 
-    monkeypatch.setattr(
-        deepspeed,
-        "initialize",
-        lambda model=None, config_params=None: [fake_engine],
-    )
+    def fake_initialize(model=None, config_params=None):
+        captured["ds_config"] = config_params
+        return [fake_engine]
+
+    monkeypatch.setattr(deepspeed, "initialize", fake_initialize)
     monkeypatch.setattr(
         transformers_deepspeed,
         "HfDeepSpeedConfig",
@@ -206,16 +206,17 @@ def test_build_hs_offload_model_passes_quant_group_size_to_hs_config(monkeypatch
         quant_bits=4,
         quant_group_size=256,
         hs_offload=True,
-        hs_codec_name="grouped_asym_int2_outlier",
-        hs_outlier_k=8,
+        hs_codec_name="qbclerp",
+        hs_qbclerp_quant_group_size=32,
     )
 
     assert returned_hf_ds_config is fake_hf_ds_config
     assert captured["enabled"] is True
     assert captured["config"] is hs_config
-    assert hs_config.quant_group_size == 256
-    assert hs_config.outlier_k == 8
-    assert hs_config.codec_name == "grouped_asym_int2_outlier"
+    quant_init = captured["ds_config"]["weight_quantization"]["quantized_initialization"]
+    assert quant_init["group_size"] == 256
+    assert hs_config.hs_qbclerp_quant_group_size == 32
+    assert hs_config.codec_name == "qbclerp"
 
 def test_hs_offload_kv_offload_setup_uses_generation_budget():
     calls = []
